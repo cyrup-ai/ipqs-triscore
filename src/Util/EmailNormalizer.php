@@ -46,7 +46,7 @@ class EmailNormalizer
 
         // Step 2: Remove '+' aliases (RFC 5233 subaddressing)
         // Pattern: user+anything@domain.com → user@domain.com
-        $result = preg_replace('/^(.+)(\+.+)@(.+)$/', '$1@$3', $email);
+        $result = preg_replace('/^(.+?)(\+.+)@(.+)$/', '$1@$3', $email);
 
         if ($result === null) {
             // PCRE error occurred - log for production monitoring

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         executionOrder="random"
+         cacheDirectory=".phpunit.cache"
+         requireCoverageMetadata="false"
+         beStrictAboutOutputDuringTests="true"
+         failOnRisky="true"
+         failOnWarning="true">
+    <testsuites>
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+        <testsuite name="Integration">
+            <directory>tests/Integration</directory>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory>src</directory>
+        </include>
+    </source>
+    <coverage includeUncoveredFiles="true"
+              ignoreDeprecatedCodeUnits="true"
+              disableCodeCoverageIgnore="false">
+        <report>
+            <!-- HTML report for local development -->
+            <html outputDirectory="coverage-html" 
+                  lowUpperBound="50" 
+                  highLowerBound="90"/>
+            
+            <!-- Clover XML for CI/CD integration (Codecov, Coveralls) -->
+            <clover outputFile="coverage/clover.xml"/>
+            
+            <!-- Text summary for console output -->
+            <text outputFile="coverage/coverage.txt" 
+                  showUncoveredFiles="false" 
+                  showOnlySummary="true"/>
+            
+            <!-- Cobertura XML for Jenkins/GitLab CI -->
+            <cobertura outputFile="coverage/cobertura.xml"/>
+        </report>
+    </coverage>
+</phpunit>

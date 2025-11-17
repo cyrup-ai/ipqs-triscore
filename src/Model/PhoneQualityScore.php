@@ -44,7 +44,7 @@ class PhoneQualityScore
     {
         return new self(
             phoneNumber: $phoneNumber,
-            fraudScore: $response['fraud_score'] ?? 0,
+            fraudScore: (int)($response['fraud_score'] ?? 0),           // API returns int
             timestamp: new \DateTimeImmutable(),
             valid: $response['valid'] ?? false,
             active: $response['active'] ?? null,                        // Nullable

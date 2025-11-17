@@ -18,7 +18,7 @@ class IpQualityScore
 {
     public function __construct(
         public readonly string $ipAddress,
-        public readonly int $fraudScore,                      // 0-100
+        public readonly int $fraudScore,                      // 0-100 (cast from API's float)
         public readonly \DateTimeImmutable $timestamp,
         public readonly ?string $countryCode,                 // ISO-2 (limited to 2 chars)
         public readonly ?string $region,                      // State/province
@@ -50,7 +50,7 @@ class IpQualityScore
     {
         return new self(
             ipAddress: $ipAddress,
-            fraudScore: $response['fraud_score'] ?? 0,
+            fraudScore: (int)($response['fraud_score'] ?? 0),
             timestamp: new \DateTimeImmutable(),
             countryCode: isset($response['country_code'])
                 ? substr($response['country_code'], 0, 2)               // Limit to 2 chars!

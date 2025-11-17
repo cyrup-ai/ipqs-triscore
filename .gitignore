@@ -1,6 +1,11 @@
 /vendor/
 .env
 .phpunit.result.cache
+/.phpunit.cache/
+/coverage-html/
+/coverage/
 composer.lock
 .claude
 CLAUDE.md
+task/*.md
+tmp

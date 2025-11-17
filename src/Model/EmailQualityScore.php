@@ -44,7 +44,7 @@ class EmailQualityScore
     {
         return new self(
             email: $email,
-            fraudScore: (int)($response['fraud_score'] ?? 0),          // Cast BigDecimal to int
+            fraudScore: (int)($response['fraud_score'] ?? 0),          // Cast float to int
             timestamp: new \DateTimeImmutable(),
             valid: $response['valid'] ?? false,
             disposable: $response['disposable'] ?? false,

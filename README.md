@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-blue.svg)](LICENSE.md)
 [![PHP Version](https://img.shields.io/badge/php-%3E%3D8.1-8892BF.svg)](https://php.net)
 
-A production-ready PHP library for fraud detection using [IPQualityScore](https://www.ipqualityscore.com) APIs. Combines email, phone, and IP address reputation scoring into a unified risk assessment with intelligent caching and override rules.
+A production-ready PHP library for fraud detection using [IPQualityScore](https://www.ipqualityscore.com) APIs. Combines email, phone, and IP address reputation scoring into a unified risk assessment with intelligent override rules.
 
 ## What This Library Provides
 
@@ -28,25 +28,22 @@ A production-ready PHP library for fraud detection using [IPQualityScore](https:
 - Elevates `MEDIUM` → `HIGH` when IP fraud score ≥ 88
 - Conservative approach: Only elevations, never downgrades
 
-### 🚀 Performance Features
+### 🚀 Architecture Features
 
-**Smart Caching Strategy**:
-- Email scores: 90-day cache (user attributes change slowly)
-- Phone scores: 90-day cache (phone numbers rarely change)
-- IP scores: **3-day cache** (IPs reassigned frequently, VPNs rotate)
-- Reduces API costs by ~90% in production
+**Direct API Integration**:
+- Lightweight client architecture - no caching layer required
+- Direct calls to IPQS APIs via HTTP clients
+- Implement your own caching strategy as needed
 
 **Graceful Degradation**:
 - Missing channels are silently skipped
-- Services continue working even if some APIs fail
-- Returns null on errors (never throws exceptions)
+- Evaluation continues even if some API calls fail
+- Returns null on client errors (never throws exceptions from network issues)
 
 ### 🏗️ Architecture
 
 ```
 src/
-├── Cache/
-│   └── CacheInterface.php         # PSR-16 simple cache interface
 ├── Client/
 │   ├── EmailClient.php            # IPQS Email Validation API
 │   ├── IpClient.php               # IPQS Proxy Detection API
@@ -57,17 +54,21 @@ src/
 │   ├── AbuseVelocity.php          # IP abuse velocity (none/low/medium/high)
 │   ├── ConnectionType.php         # IP connection type (residential/corporate/etc)
 │   └── RiskCategory.php           # Risk categories (LOW/MEDIUM/HIGH)
+├── Exception/
+│   ├── InvalidEmailException.php         # Email validation errors
+│   ├── InvalidIpAddressException.php     # IP validation errors
+│   ├── InvalidPhoneNumberException.php   # Phone validation errors
+│   └── ValidationException.php           # Base validation exception
 ├── Model/
 │   ├── EmailQualityScore.php     # Email fraud score + metadata
 │   ├── FraudEvaluationResult.php # Tri-risk evaluation result
 │   ├── IpQualityScore.php        # IP fraud score + geo data
 │   └── PhoneQualityScore.php     # Phone fraud score + metadata
-├── Service/
-│   ├── EmailQualityScoreService.php  # Cached email scoring (90-day TTL)
-│   ├── IpQualityScoreService.php     # Cached IP scoring (3-day TTL)
-│   └── PhoneQualityScoreService.php  # Cached phone scoring (90-day TTL)
-└── TriRisk/
-    └── TriRiskEvaluator.php      # Tri-risk fraud evaluation algorithm
+├── TriRisk/
+│   └── TriRiskEvaluator.php      # Tri-risk fraud evaluation algorithm
+└── Util/
+    ├── EmailNormalizer.php        # Email normalization (lowercasing, trimming)
+    └── UrlSanitizer.php           # API key sanitization for logs
 ```
 
 ---
@@ -103,94 +104,39 @@ IPQS_TIMEOUT=10                                     # Optional, default: 10 seco
 IPQS_STRICTNESS=0                                   # Optional, 0-3 (default: 0)
 ```
 
-### 3. Implement Cache Provider
-
-The library requires a PSR-16 compatible cache implementation. Here's a simple example using file cache:
-
-```php
-<?php
-use Kodegen\Ipqs\Cache\CacheInterface;
-
-class FileCache implements CacheInterface
-{
-    private string $cacheDir;
-
-    public function __construct(string $cacheDir = '/tmp/ipqs-cache')
-    {
-        $this->cacheDir = $cacheDir;
-        if (!is_dir($cacheDir)) {
-            mkdir($cacheDir, 0755, true);
-        }
-    }
-
-    public function get(string $key): mixed
-    {
-        $file = $this->cacheDir . '/' . md5($key);
-        if (!file_exists($file)) {
-            return null;
-        }
-
-        $data = unserialize(file_get_contents($file));
-        if ($data['expires'] < time()) {
-            unlink($file);
-            return null;
-        }
-
-        return $data['value'];
-    }
-
-    public function set(string $key, mixed $value, int $ttl): void
-    {
-        $file = $this->cacheDir . '/' . md5($key);
-        $data = [
-            'value' => $value,
-            'expires' => time() + $ttl,
-        ];
-        file_put_contents($file, serialize($data));
-    }
-
-    public function delete(string $key): void
-    {
-        $file = $this->cacheDir . '/' . md5($key);
-        if (file_exists($file)) {
-            unlink($file);
-        }
-    }
-}
-```
-
-**Production Recommendation**: Use Redis, Memcached, or your framework's cache (Laravel Cache, Symfony Cache, etc.)
-
-### 4. Basic Usage Example
+### 3. Basic Usage Example
 
 ```php
 <?php
 use Kodegen\Ipqs\Config\IpqsConfig;
 use Kodegen\Ipqs\Client\{EmailClient, IpClient, PhoneClient};
-use Kodegen\Ipqs\Service\{EmailQualityScoreService, IpQualityScoreService, PhoneQualityScoreService};
 use Kodegen\Ipqs\TriRisk\TriRiskEvaluator;
+use Kodegen\Ipqs\Util\EmailNormalizer;
 use Kodegen\Ipqs\Enum\RiskCategory;
 use Psr\Log\NullLogger;
 
 // 1. Setup configuration
 $config = IpqsConfig::fromEnv();
 
-// 2. Setup cache and logger
-$cache = new FileCache(); // Or your PSR-16 cache implementation
-$logger = new NullLogger(); // Or your PSR-3 logger
+// 2. Setup logger
+$logger = new NullLogger(); // Or your PSR-3 logger (Monolog, etc.)
 
-// 3. Initialize HTTP clients
-$emailClient = new EmailClient($config, $logger);
+// 3. Initialize utility classes
+$emailNormalizer = new EmailNormalizer();
+
+// 4. Initialize API clients
+$emailClient = new EmailClient($config, $logger, $emailNormalizer);
 $ipClient = new IpClient($config, $logger);
 $phoneClient = new PhoneClient($config, $logger);
 
-// 4. Initialize services (with caching)
-$emailService = new EmailQualityScoreService($emailClient, $cache, $logger);
-$ipService = new IpQualityScoreService($ipClient, $cache, $logger);
-$phoneService = new PhoneQualityScoreService($phoneClient, $cache, $logger);
-
 // 5. Create tri-risk evaluator
-$evaluator = new TriRiskEvaluator($emailService, $ipService, $phoneService);
+$evaluator = new TriRiskEvaluator(
+    $emailClient,
+    $ipClient,
+    $phoneClient,
+    $emailNormalizer,
+    $logger
+);
 
 // 6. Evaluate fraud risk
 $result = $evaluator->evaluate(
@@ -389,12 +335,27 @@ $result = $evaluator->evaluate(
 ### Pre-Fetched Scores (Batch Processing)
 
 ```php
-// Pre-fetch scores from database or cache
-$emailScore = $emailService->score('user@example.com');
-$ipScore = $ipService->score('192.168.1.1', 'Mozilla/5.0...');
-$phoneScore = $phoneService->score('+15551234567');
+use Kodegen\Ipqs\Model\{EmailQualityScore, IpQualityScore, PhoneQualityScore};
 
-// Evaluate without calling services (performance optimization)
+// Fetch raw API responses
+$emailResponse = $emailClient->scoreRaw('user@example.com');
+$ipResponse = $ipClient->scoreRaw('192.168.1.1', ['userAgent' => 'Mozilla/5.0...']);
+$phoneResponse = $phoneClient->scoreRaw('+15551234567');
+
+// Convert to model objects
+$emailScore = $emailResponse !== null && ($emailResponse['success'] ?? false)
+    ? EmailQualityScore::fromApiResponse('user@example.com', $emailResponse)
+    : null;
+
+$ipScore = $ipResponse !== null && ($ipResponse['success'] ?? false)
+    ? IpQualityScore::fromApiResponse('192.168.1.1', $ipResponse)
+    : null;
+
+$phoneScore = $phoneResponse !== null && ($phoneResponse['success'] ?? false)
+    ? PhoneQualityScore::fromApiResponse('+15551234567', $phoneResponse)
+    : null;
+
+// Evaluate without calling clients again (performance optimization)
 $result = $evaluator->evaluate(
     emailScore: $emailScore,
     ipScore: $ipScore,
@@ -402,19 +363,23 @@ $result = $evaluator->evaluate(
 );
 ```
 
-### Individual Service Usage
+### Individual Client Usage
 
 ```php
-// Use services independently
-$emailScore = $emailService->score('user@example.com');
-if ($emailScore !== null) {
+use Kodegen\Ipqs\Model\{EmailQualityScore, IpQualityScore};
+
+// Use clients independently
+$emailResponse = $emailClient->scoreRaw('user@example.com');
+if ($emailResponse !== null && ($emailResponse['success'] ?? false)) {
+    $emailScore = EmailQualityScore::fromApiResponse('user@example.com', $emailResponse);
     echo "Email Fraud Score: {$emailScore->fraudScore}\n";
     echo "Valid: " . ($emailScore->valid ? 'Yes' : 'No') . "\n";
     echo "Disposable: " . ($emailScore->disposable ? 'Yes' : 'No') . "\n";
 }
 
-$ipScore = $ipService->score('8.8.8.8', 'Mozilla/5.0...');
-if ($ipScore !== null) {
+$ipResponse = $ipClient->scoreRaw('8.8.8.8', ['userAgent' => 'Mozilla/5.0...']);
+if ($ipResponse !== null && ($ipResponse['success'] ?? false)) {
+    $ipScore = IpQualityScore::fromApiResponse('8.8.8.8', $ipResponse);
     echo "IP Fraud Score: {$ipScore->fraudScore}\n";
     echo "Country: {$ipScore->countryCode}\n";
     echo "VPN: " . ($ipScore->vpn ? 'Yes' : 'No') . "\n";
@@ -436,8 +401,8 @@ find src -name "*.php" -exec php -l {} \;
 
 This library follows:
 - **PSR-4** autoloading
-- **PSR-3** logging interface
-- **PSR-16** simple cache interface
+- **PSR-3** logging interface (Psr\Log\LoggerInterface)
+- **PSR-18** HTTP client interface (Psr\Http\Client\ClientInterface via Guzzle)
 - **PHP 8.1+** features (strict types, constructor property promotion, readonly properties, enums, match expressions)
 
 ### Project Structure
@@ -445,12 +410,78 @@ This library follows:
 ```
 ipqs-triscore/
 ├── src/                    # Source code (PSR-4: Kodegen\Ipqs)
+├── tests/                  # PHPUnit tests
+│   ├── Fixtures/          # Test API response fixtures
+│   ├── Integration/       # Integration tests
+│   └── Support/           # Test utilities (MockHttpClient)
 ├── vendor/                 # Composer dependencies
 ├── composer.json           # Package configuration
 ├── composer.lock           # Locked dependencies
+├── phpunit.xml            # PHPUnit configuration
 ├── LICENSE.md              # Dual MIT/Apache-2.0 license
 └── README.md               # This file
 ```
+
+---
+
+## Testing
+
+### Overview
+
+The library includes comprehensive testing infrastructure using `MockHttpClient` and pre-built response fixtures. This enables testing without consuming API credits or making real network calls.
+
+### Running Tests
+
+```bash
+# Run all integration tests
+vendor/bin/phpunit
+
+# Run with coverage report
+vendor/bin/phpunit --coverage-html coverage-html
+```
+
+### Test Structure
+
+```
+tests/
+├── Fixtures/              # Pre-built API response fixtures
+│   ├── EmailApiResponse.php
+│   ├── IpApiResponse.php
+│   └── PhoneApiResponse.php
+├── Integration/           # Integration tests for clients
+│   ├── EmailClientIntegrationTest.php
+│   ├── IpClientIntegrationTest.php
+│   └── PhoneClientIntegrationTest.php
+└── Support/
+    └── MockHttpClient.php # Mock HTTP client for testing
+```
+
+### Using MockHttpClient in Your Tests
+
+```php
+use Kodegen\Ipqs\Tests\Support\MockHttpClient;
+use Kodegen\Ipqs\Tests\Fixtures\IpApiResponse;
+use Kodegen\Ipqs\Client\IpClient;
+use Kodegen\Ipqs\Config\IpqsConfig;
+use Psr\Log\NullLogger;
+
+// Create mock client with specific scenario
+$mockClient = (new MockHttpClient())
+    ->addResponse(IpApiResponse::highFraud())
+    ->build();
+
+// Inject mock into client
+$config = new IpqsConfig('test-api-key');
+$client = new IpClient($config, new NullLogger(), $mockClient);
+
+// Test with mock data
+$result = $client->scoreRaw('8.8.8.8');
+assert($result['fraud_score'] === 95);
+```
+
+### Available Test Fixtures
+
+The library includes pre-built response fixtures in the `tests/Fixtures/` directory that simulate various API scenarios. These fixtures can be used with `MockHttpClient` for testing without making real API calls.
 
 ---
 
@@ -512,33 +543,100 @@ $config = IpqsConfig::fromEnv();
 
 ---
 
-## Cache Strategy
+## Implementing Caching (Optional)
 
-| Service | TTL | Rationale |
-|---------|-----|-----------|
+The library uses a simple client architecture without built-in caching. You can implement your own caching strategy by wrapping the clients or creating a decorator pattern.
+
+### Recommended Cache TTLs
+
+| Data Type | Suggested TTL | Rationale |
+|-----------|---------------|-----------|
 | Email | 90 days | User attributes change slowly |
 | Phone | 90 days | Phone numbers rarely change |
 | IP | **3 days** | IPs reassigned frequently, VPNs rotate |
 
-**Performance Impact**: ~90% cache hit rate in production = ~90% cost reduction
+### Example: Simple Cache Wrapper
+
+```php
+use Kodegen\Ipqs\Client\EmailClient;
+use Psr\SimpleCache\CacheInterface;
+
+class CachedEmailClient
+{
+    public function __construct(
+        private EmailClient $client,
+        private CacheInterface $cache,
+        private int $ttl = 7776000  // 90 days
+    ) {}
+
+    public function scoreRaw(string $email): ?array
+    {
+        $cacheKey = 'ipqs_email_' . md5(strtolower(trim($email)));
+
+        // Try cache first
+        $cached = $this->cache->get($cacheKey);
+        if ($cached !== null) {
+            return $cached;
+        }
+
+        // Fetch from API
+        $result = $this->client->scoreRaw($email);
+
+        // Cache successful responses
+        if ($result !== null && ($result['success'] ?? false)) {
+            $this->cache->set($cacheKey, $result, $this->ttl);
+        }
+
+        return $result;
+    }
+}
+```
 
 ---
 
 ## Error Handling
 
-**Philosophy**: Never throw exceptions, always return null on errors
+### Client Behavior
+
+**API/Network Errors**: Clients return `null` on API errors, network issues, or invalid responses (logged via PSR-3 logger)
 
 ```php
-// Services return null on API errors
-$score = $emailService->score('invalid@domain');
-if ($score === null) {
-    // Handle error: API down, validation failed, etc.
-    // System continues to work with other channels
+// Clients return null on API/network errors
+$response = $emailClient->scoreRaw('user@example.com');
+if ($response === null) {
+    // Handle error: API down, network issue, invalid response, etc.
+    // Check logs for details
 }
+```
 
+**Validation Errors**: Clients throw exceptions for invalid input (before making API calls)
+
+```php
+use Kodegen\Ipqs\Exception\{InvalidEmailException, InvalidIpAddressException, InvalidPhoneNumberException};
+
+try {
+    $response = $emailClient->scoreRaw('not-an-email');
+} catch (InvalidEmailException $e) {
+    // Handle validation error
+    echo "Invalid email: " . $e->getMessage();
+}
+```
+
+### TriRiskEvaluator Behavior
+
+The evaluator is designed for graceful degradation - it continues with available data even if some API calls fail:
+
+```php
 // Tri-risk continues with available data
-$result = $evaluator->evaluate(email: 'user@example.com'); // IP/Phone may fail
-// Still returns a result based on available scores
+$result = $evaluator->evaluate(
+    email: 'user@example.com',
+    ipAddress: '192.168.1.1',
+    userAgent: 'Mozilla/5.0...',
+    phoneNumber: '+15551234567'
+);
+
+// Even if email and phone APIs fail, IP data is still used
+// avgScore calculated from available scores only
 ```
 
 ---
@@ -550,23 +648,54 @@ $result = $evaluator->evaluate(email: 'user@example.com'); // IP/Phone may fail
 ```php
 // app/Providers/IpqsServiceProvider.php
 use Kodegen\Ipqs\TriRisk\TriRiskEvaluator;
+use Kodegen\Ipqs\Client\{EmailClient, IpClient, PhoneClient};
+use Kodegen\Ipqs\Config\IpqsConfig;
+use Kodegen\Ipqs\Util\EmailNormalizer;
 
 public function register()
 {
+    // Register config as singleton
+    $this->app->singleton(IpqsConfig::class, function () {
+        return IpqsConfig::fromEnv();
+    });
+
+    // Register utility classes
+    $this->app->singleton(EmailNormalizer::class, function () {
+        return new EmailNormalizer();
+    });
+
+    // Register clients
+    $this->app->singleton(EmailClient::class, function ($app) {
+        return new EmailClient(
+            $app->make(IpqsConfig::class),
+            $app->make('log'),
+            $app->make(EmailNormalizer::class)
+        );
+    });
+
+    $this->app->singleton(IpClient::class, function ($app) {
+        return new IpClient(
+            $app->make(IpqsConfig::class),
+            $app->make('log')
+        );
+    });
+
+    $this->app->singleton(PhoneClient::class, function ($app) {
+        return new PhoneClient(
+            $app->make(IpqsConfig::class),
+            $app->make('log')
+        );
+    });
+
+    // Register evaluator
     $this->app->singleton(TriRiskEvaluator::class, function ($app) {
-        $config = IpqsConfig::fromEnv();
-        $cache = $app->make('cache.store'); // Laravel cache
-        $logger = $app->make('log');
-
-        $emailClient = new EmailClient($config, $logger);
-        $ipClient = new IpClient($config, $logger);
-        $phoneClient = new PhoneClient($config, $logger);
-
-        $emailService = new EmailQualityScoreService($emailClient, $cache, $logger);
-        $ipService = new IpQualityScoreService($ipClient, $cache, $logger);
-        $phoneService = new PhoneQualityScoreService($phoneClient, $cache, $logger);
-
-        return new TriRiskEvaluator($emailService, $ipService, $phoneService);
+        return new TriRiskEvaluator(
+            $app->make(EmailClient::class),
+            $app->make(IpClient::class),
+            $app->make(PhoneClient::class),
+            $app->make(EmailNormalizer::class),
+            $app->make('log')
+        );
     });
 }
 
@@ -594,11 +723,31 @@ services:
     Kodegen\Ipqs\Config\IpqsConfig:
         factory: ['Kodegen\Ipqs\Config\IpqsConfig', 'fromEnv']
 
+    Kodegen\Ipqs\Util\EmailNormalizer: ~
+
+    Kodegen\Ipqs\Client\EmailClient:
+        arguments:
+            $config: '@Kodegen\Ipqs\Config\IpqsConfig'
+            $logger: '@logger'
+            $emailNormalizer: '@Kodegen\Ipqs\Util\EmailNormalizer'
+
+    Kodegen\Ipqs\Client\IpClient:
+        arguments:
+            $config: '@Kodegen\Ipqs\Config\IpqsConfig'
+            $logger: '@logger'
+
+    Kodegen\Ipqs\Client\PhoneClient:
+        arguments:
+            $config: '@Kodegen\Ipqs\Config\IpqsConfig'
+            $logger: '@logger'
+
     Kodegen\Ipqs\TriRisk\TriRiskEvaluator:
         arguments:
-            $emailService: '@Kodegen\Ipqs\Service\EmailQualityScoreService'
-            $ipService: '@Kodegen\Ipqs\Service\IpQualityScoreService'
-            $phoneService: '@Kodegen\Ipqs\Service\PhoneQualityScoreService'
+            $emailClient: '@Kodegen\Ipqs\Client\EmailClient'
+            $ipClient: '@Kodegen\Ipqs\Client\IpClient'
+            $phoneClient: '@Kodegen\Ipqs\Client\PhoneClient'
+            $emailNormalizer: '@Kodegen\Ipqs\Util\EmailNormalizer'
+            $logger: '@logger'
 ```
 
 ---
