@@ -8,9 +8,11 @@ use Kodegen\Ipqs\Model\EmailQualityScore;
 use Kodegen\Ipqs\Model\IpQualityScore;
 use Kodegen\Ipqs\Model\PhoneQualityScore;
 use Kodegen\Ipqs\Model\FraudEvaluationResult;
-use Kodegen\Ipqs\Service\EmailQualityScoreService;
-use Kodegen\Ipqs\Service\IpQualityScoreService;
-use Kodegen\Ipqs\Service\PhoneQualityScoreService;
+use Kodegen\Ipqs\Client\EmailClient;
+use Kodegen\Ipqs\Client\IpClient;
+use Kodegen\Ipqs\Client\PhoneClient;
+use Kodegen\Ipqs\Util\EmailNormalizer;
+use Psr\Log\LoggerInterface;
 
 /**
  * Tri-Risk Evaluation Service
@@ -29,9 +31,11 @@ use Kodegen\Ipqs\Service\PhoneQualityScoreService;
 class TriRiskEvaluator
 {
     public function __construct(
-        private EmailQualityScoreService $emailService,
-        private IpQualityScoreService $ipService,
-        private PhoneQualityScoreService $phoneService,
+        private EmailClient $emailClient,
+        private IpClient $ipClient,
+        private PhoneClient $phoneClient,
+        private EmailNormalizer $emailNormalizer,
+        private LoggerInterface $logger,
     ) {}
 
     /**
@@ -65,26 +69,90 @@ class TriRiskEvaluator
         // ============================================================================
 
         // Collect Email Score
-        // Use pre-fetched score if available, otherwise call service if email provided
-        $emailQualityScore = $emailScore ?? ($email !== null ? $this->emailService->score($email) : null);
+        // Use pre-fetched score if available, otherwise fetch from API
+        if ($emailScore === null && $email !== null) {
+            $normalizedEmail = $this->emailNormalizer->normalize($email);
+            $response = $this->emailClient->scoreRaw($normalizedEmail);
+
+            // Validate response is successful before mapping
+            if ($response !== null && ($response['success'] ?? false) === true) {
+                try {
+                    $emailScore = EmailQualityScore::fromApiResponse($normalizedEmail, $response);
+                } catch (\Throwable $e) {
+                    // Log mapping errors (malformed API response)
+                    $this->logger->error('TriRiskEvaluator: Failed to map email response', [
+                        'email' => $normalizedEmail,
+                        'error' => $e->getMessage(),
+                        'response_keys' => array_keys($response),
+                    ]);
+                    // emailScore remains null - scoring will be skipped
+                }
+            }
+            // If response is null or success=false, Client already logged the error
+        }
+
+        $emailQualityScore = $emailScore;  // Use pre-fetched or newly fetched score
         if ($emailQualityScore !== null) {
             $sumOfScores += $emailQualityScore->fraudScore;
             $scoredServices++;
         }
 
         // Collect IP Score
-        // CRITICAL: Requires BOTH ipAddress AND userAgent
-        // Pre-fetched score takes precedence over raw inputs
-        $ipQualityScore = $ipScore ?? (($ipAddress !== null && $userAgent !== null)
-            ? $this->ipService->score($ipAddress, $userAgent)
-            : null);
+        // Use pre-fetched score if available, otherwise fetch from API
+        // CRITICAL: IP scoring requires BOTH ipAddress AND userAgent
+        if ($ipScore === null && $ipAddress !== null && $userAgent !== null) {
+            // Build params array with userAgent (required for accurate fraud detection)
+            $params = ['userAgent' => $userAgent];
+            $response = $this->ipClient->scoreRaw($ipAddress, $params);
+
+            // Validate response is successful before mapping
+            if ($response !== null && ($response['success'] ?? false) === true) {
+                try {
+                    $ipScore = IpQualityScore::fromApiResponse($ipAddress, $response);
+                } catch (\Throwable $e) {
+                    // Log mapping errors (malformed API response)
+                    $this->logger->error('TriRiskEvaluator: Failed to map IP response', [
+                        'ipAddress' => $ipAddress,
+                        'userAgent' => $userAgent,
+                        'error' => $e->getMessage(),
+                        'response_keys' => array_keys($response),
+                    ]);
+                    // ipScore remains null - scoring will be skipped
+                }
+            }
+            // If response is null or success=false, Client already logged the error
+        }
+
+        $ipQualityScore = $ipScore;  // Use pre-fetched or newly fetched score
         if ($ipQualityScore !== null) {
             $sumOfScores += $ipQualityScore->fraudScore;
             $scoredServices++;
         }
 
         // Collect Phone Score
-        $phoneQualityScore = $phoneScore ?? ($phoneNumber !== null ? $this->phoneService->score($phoneNumber) : null);
+        // Use pre-fetched score if available, otherwise fetch from API
+        if ($phoneScore === null && $phoneNumber !== null) {
+            // Country defaults to config default (typically "US") if not provided
+            $response = $this->phoneClient->scoreRaw($phoneNumber);
+
+            // Validate response is successful before mapping
+            if ($response !== null && ($response['success'] ?? false) === true) {
+                try {
+                    $phoneScore = PhoneQualityScore::fromApiResponse($phoneNumber, $response);
+                } catch (\Throwable $e) {
+                    // Log mapping errors (malformed API response)
+                    $this->logger->error('TriRiskEvaluator: Failed to map phone response', [
+                        'phoneNumber' => $phoneNumber,
+                        'error' => $e->getMessage(),
+                        'response_keys' => array_keys($response),
+                    ]);
+                    // phoneScore remains null - scoring will be skipped
+                }
+            }
+            // If response is null or success=false, Client already logged the error
+        }
+
+        $phoneQualityScore = $phoneScore;  // Use pre-fetched or newly fetched score
         if ($phoneQualityScore !== null) {
             $sumOfScores += $phoneQualityScore->fraudScore;
             $scoredServices++;
@@ -105,8 +173,8 @@ class TriRiskEvaluator
             // Map average to base risk category
             $riskCategory = match (true) {
                 $avgScore <= 50 => RiskCategory::LOW,
-                $avgScore >= 51 && $avgScore <= 75 => RiskCategory::MEDIUM,
-                default => RiskCategory::HIGH,  // avgScore >= 76
+                $avgScore <= 75 => RiskCategory::MEDIUM,  // Simplified - avgScore > 50 is implicit
+                default => RiskCategory::HIGH,            // avgScore > 75
             };
         }
 

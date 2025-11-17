@@ -51,6 +51,15 @@ class IpqsConfig
             );
         }
 
+        // Emit security warning if enabled
+        if (($_ENV['IPQS_WARN_API_KEY_EXPOSURE'] ?? getenv('IPQS_WARN_API_KEY_EXPOSURE')) === '1') {
+            error_log(
+                '⚠️  SECURITY NOTICE: IPQualityScore API requires API keys in URL paths. ' .
+                'Ensure your logs are secured and API keys are rotated regularly. ' .
+                'See README.md "Security Notice" section for mitigation strategies.'
+            );
+        }
+
         return new self(
             apiKey: $apiKey,
             baseUrl: $_ENV['IPQS_BASE_URL'] ?? getenv('IPQS_BASE_URL') ?: 'https://ipqualityscore.com/api/json',

@@ -4,19 +4,23 @@ declare(strict_types=1);
 namespace Kodegen\Ipqs\Client;
 
 use Kodegen\Ipqs\Config\IpqsConfig;
+use Kodegen\Ipqs\Exception\InvalidIpAddressException;
+use Kodegen\Ipqs\Util\UrlSanitizer;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use Psr\Http\Client\ClientInterface;
 use Psr\Log\LoggerInterface;
 
 class IpClient
 {
-    private Client $httpClient;
+    private ClientInterface $httpClient;
 
     public function __construct(
         private IpqsConfig $config,
         private LoggerInterface $logger,
+        ?ClientInterface $httpClient = null,
     ) {
-        $this->httpClient = new Client([
+        $this->httpClient = $httpClient ?? new Client([
             'timeout' => $this->config->getTimeout(),
         ]);
     }
@@ -27,9 +31,26 @@ class IpClient
      * @param string $ipAddress IP address to score
      * @param array<string, mixed> $params Additional query parameters (userAgent, strictness, etc.)
      * @return array<string, mixed>|null Raw API response or null on error
+     *
+     * @throws InvalidIpAddressException if IP address format is invalid
      */
     public function scoreRaw(string $ipAddress, array $params = []): ?array
     {
+        // ========== VALIDATION BLOCK (NEW) ==========
+        $ipAddress = trim($ipAddress);
+
+        if (empty($ipAddress)) {
+            throw new InvalidIpAddressException('IP address cannot be empty');
+        }
+
+        if (!filter_var($ipAddress, FILTER_VALIDATE_IP)) {
+            throw new InvalidIpAddressException(
+                sprintf('Invalid IP address format: %s', $ipAddress)
+            );
+        }
+        // ========== END VALIDATION BLOCK ==========
+
+        // Validation passed - proceed with API call (existing code)
         try {
             // Build query string with defaults
             $queryParams = array_merge([
@@ -49,18 +70,45 @@ class IpClient
                 $queryString
             );
 
-            $response = $this->httpClient->post($url, [
+            $response = $this->httpClient->get($url, [
                 'headers' => ['Accept' => 'application/json'],
             ]);
 
             $body = $response->getBody()->getContents();
 
             // Match Kotlin: log successful response at info level
-            $this->logger->info('IpClient::scoreRaw response', ['json' => $body]);
+            // Log with sanitized URL (API key redacted)
+            $this->logger->info('IpClient::scoreRaw response', [
+                'url' => UrlSanitizer::sanitize($url),
+                'json' => $body,
+            ]);
 
-            return json_decode($body, true);
+            // Decode with error detection
+            $decoded = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
+
+            // Validate decoded type is array (IPQS API always returns objects)
+            if (!is_array($decoded)) {
+                $this->logger->error('IpClient::scoreRaw response is not an array', [
+                    'url' => UrlSanitizer::sanitize($url),
+                    'ipAddress' => $ipAddress,
+                    'type' => get_debug_type($decoded),
+                    'body' => substr($body, 0, 200),
+                ]);
+                return null;
+            }
+
+            return $decoded;
+        } catch (\JsonException $e) {
+            $this->logger->error('IpClient::scoreRaw JSON decode failed', [
+                'url' => UrlSanitizer::sanitize($url),
+                'ipAddress' => $ipAddress,
+                'error' => $e->getMessage(),
+                'body' => substr($body ?? '', 0, 500),
+            ]);
+            return null;
         } catch (GuzzleException $e) {
             $this->logger->error('IpClient::scoreRaw failed', [
+                'url' => UrlSanitizer::sanitize($url),
                 'ipAddress' => $ipAddress,
                 'error' => $e->getMessage(),
             ]);

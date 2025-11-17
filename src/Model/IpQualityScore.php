@@ -23,8 +23,8 @@ class IpQualityScore
         public readonly ?string $countryCode,                 // ISO-2 (limited to 2 chars)
         public readonly ?string $region,                      // State/province
         public readonly ?string $city,                        // City name
-        public readonly float $latitude,                      // GPS coordinate
-        public readonly float $longitude,                     // GPS coordinate
+        public readonly ?float $latitude,                     // GPS coordinate (nullable)
+        public readonly ?float $longitude,                    // GPS coordinate (nullable)
         public readonly ?string $isp,                         // Internet Service Provider
         public readonly ?int $asn,                            // Autonomous System Number
         public readonly bool $isCrawler,                      // Search engine bot
@@ -57,8 +57,8 @@ class IpQualityScore
                 : null,
             region: $response['region'] ?? null,
             city: $response['city'] ?? null,
-            latitude: (float)($response['latitude'] ?? 0.0),
-            longitude: (float)($response['longitude'] ?? 0.0),
+            latitude: isset($response['latitude']) ? (float)$response['latitude'] : null,
+            longitude: isset($response['longitude']) ? (float)$response['longitude'] : null,
             isp: $response['ISP'] ?? $response['isp'] ?? null,          // Uppercase first!
             asn: $response['ASN'] ?? $response['asn'] ?? null,          // Uppercase first!
             isCrawler: $response['is_crawler'] ?? false,

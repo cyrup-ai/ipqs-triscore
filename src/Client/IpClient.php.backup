@@ -4,22 +4,19 @@ declare(strict_types=1);
 namespace Kodegen\Ipqs\Client;
 
 use Kodegen\Ipqs\Config\IpqsConfig;
-use Kodegen\Ipqs\Exception\InvalidEmailException;
-use Kodegen\Ipqs\Util\EmailNormalizer;
 use Kodegen\Ipqs\Util\UrlSanitizer;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use Psr\Http\Client\ClientInterface;
 use Psr\Log\LoggerInterface;
 
-class EmailClient
+class IpClient
 {
     private ClientInterface $httpClient;
 
     public function __construct(
         private IpqsConfig $config,
         private LoggerInterface $logger,
-        private EmailNormalizer $emailNormalizer,
         ?ClientInterface $httpClient = null,
     ) {
         $this->httpClient = $httpClient ?? new Client([
@@ -28,36 +25,31 @@ class EmailClient
     }
 
     /**
-     * Score an email address via IPQS API
+     * Score an IP address via IPQS API
      *
+     * @param string $ipAddress IP address to score
+     * @param array<string, mixed> $params Additional query parameters (userAgent, strictness, etc.)
      * @return array<string, mixed>|null Raw API response or null on error
-     *
-     * @throws InvalidEmailException if email format is invalid
      */
-    public function scoreRaw(string $email): ?array
+    public function scoreRaw(string $ipAddress, array $params = []): ?array
     {
-        // ========== VALIDATION BLOCK (NEW) - BEFORE NORMALIZATION ==========
-        $email = trim($email);
-
-        if (empty($email)) {
-            throw new InvalidEmailException('Email address cannot be empty');
-        }
-
-        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            throw new InvalidEmailException(
-                sprintf('Invalid email address format: %s', $email)
-            );
-        }
-        // ========== END VALIDATION BLOCK ==========
-
-        // Validation passed - proceed with normalization and API call (existing code)
         try {
-            $normalizedEmail = $this->normalizeEmail($email);
+            // Build query string with defaults
+            $queryParams = array_merge([
+                'strictness' => $this->config->getDefaultStrictness(),
+            ], $params);
+
+            // Remove null values (matching Kotlin behavior)
+            $queryParams = array_filter($queryParams, fn($value) => $value !== null);
+
+            $queryString = http_build_query($queryParams);
+
             $url = sprintf(
-                '%s/email/%s/%s',
+                '%s/ip/%s/%s?%s',
                 $this->config->getBaseUrl(),
                 $this->config->getApiKey(),
-                $normalizedEmail
+                $ipAddress,
+                $queryString
             );
 
             $response = $this->httpClient->get($url, [
@@ -66,14 +58,21 @@ class EmailClient
 
             $body = $response->getBody()->getContents();
 
+            // Match Kotlin: log successful response at info level
+            // Log with sanitized URL (API key redacted)
+            $this->logger->info('IpClient::scoreRaw response', [
+                'url' => UrlSanitizer::sanitize($url),
+                'json' => $body,
+            ]);
+
             // Decode with error detection
             $decoded = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
 
             // Validate decoded type is array (IPQS API always returns objects)
             if (!is_array($decoded)) {
-                $this->logger->error('EmailClient::scoreRaw response is not an array', [
+                $this->logger->error('IpClient::scoreRaw response is not an array', [
                     'url' => UrlSanitizer::sanitize($url),
-                    'email' => $email,
+                    'ipAddress' => $ipAddress,
                     'type' => get_debug_type($decoded),
                     'body' => substr($body, 0, 200),
                 ]);
@@ -82,33 +81,20 @@ class EmailClient
 
             return $decoded;
         } catch (\JsonException $e) {
-            $this->logger->error('EmailClient::scoreRaw JSON decode failed', [
+            $this->logger->error('IpClient::scoreRaw JSON decode failed', [
                 'url' => UrlSanitizer::sanitize($url),
-                'email' => $email,
+                'ipAddress' => $ipAddress,
                 'error' => $e->getMessage(),
                 'body' => substr($body ?? '', 0, 500),
             ]);
             return null;
         } catch (GuzzleException $e) {
-            $this->logger->error('EmailClient::scoreRaw failed', [
+            $this->logger->error('IpClient::scoreRaw failed', [
                 'url' => UrlSanitizer::sanitize($url),
-                'email' => $email,
+                'ipAddress' => $ipAddress,
                 'error' => $e->getMessage(),
             ]);
             return null;
         }
-    }
-
-    /**
-     * Normalize email using centralized EmailNormalizer
-     *
-     * Delegates to EmailNormalizer::normalize() to ensure consistent
-     * normalization across the entire application (Service, Client, etc.)
-     *
-     * @see EmailNormalizer::normalize() For normalization rules and logic
-     */
-    private function normalizeEmail(string $email): string
-    {
-        return $this->emailNormalizer->normalize($email);
     }
 }

@@ -1,5 +1,5 @@
 <div align="center">
-  <img src=".github/banner.png" alt="Kodegen AI Banner" width="100%" />
+  <img src="assets/img/banner.png" alt="Kodegen AI Banner" width="100%" />
 </div>
 
 # IPQS TriScore - Fraud Detection Library for PHP 8+
@@ -220,6 +220,153 @@ if (isset($result->metadata['ip'])) {
     echo "Proxy: " . ($ip['proxy'] ? 'Yes' : 'No') . "\n";
     echo "VPN: " . ($ip['vpn'] ? 'Yes' : 'No') . "\n";
 }
+```
+
+---
+
+## ⚠️ Security Notice: API Key Exposure
+
+**IMPORTANT:** The IPQualityScore API requires API keys to be embedded in URL paths (e.g., `/api/json/ip/{API_KEY}/{IP_ADDRESS}`). This is a design decision by IPQualityScore and cannot be changed.
+
+### Implications
+
+API keys will appear in:
+- Web server access logs (nginx, Apache)
+- HTTP proxy logs (HAProxy, Varnish)
+- Load balancer logs (AWS ALB, CloudFront)
+- Network monitoring tools
+- Any system that logs HTTP requests
+
+### Mitigation
+
+This library implements **URL sanitization** in all log messages:
+- Logger calls sanitize URLs before logging (API keys replaced with `***REDACTED***`)
+- See `Kodegen\Ipqs\Util\UrlSanitizer` for implementation
+- Only application-level logs are protected; infrastructure logs require separate configuration
+
+### Recommendations
+
+1. **Secure your logs:** Ensure log files have restricted permissions (600 or 640)
+2. **Log rotation:** Implement log rotation with secure deletion of old logs
+3. **Centralized logging:** If using centralized logging, ensure transport is encrypted (TLS)
+4. **API key rotation:** Rotate API keys regularly through IPQualityScore dashboard
+5. **Infrastructure logging:** Configure web servers/proxies to not log URLs matching `/api/json/` patterns
+
+### Infrastructure-Level Log Sanitization
+
+**Nginx Example:**
+
+```nginx
+# Custom log format that sanitizes IPQS API URLs
+log_format sanitized '$remote_addr - $remote_user [$time_local] '
+                     '"$request_method $sanitized_uri $server_protocol" '
+                     '$status $body_bytes_sent "$http_referer" '
+                     '"$http_user_agent"';
+
+# Map to create sanitized URI
+map $request_uri $sanitized_uri {
+    ~^(/api/json/(?:ip|email|phone)/)([^/]+)(/.+)$ "$1***REDACTED***$3";
+    default $request_uri;
+}
+
+# Use sanitized log format
+access_log /var/log/nginx/access.log sanitized;
+```
+
+**Apache Example:**
+
+```apache
+# Define custom log format with sanitization
+# Note: Apache doesn't support inline regex substitution like nginx
+# Consider using mod_rewrite or logging only non-sensitive parts
+
+# Option 1: Don't log IPQS API calls at all
+SetEnvIf Request_URI "^/api/json/(ip|email|phone)/" dontlog
+CustomLog logs/access_log combined env=!dontlog
+
+# Option 2: Use external log processing (e.g., logrotate with sed)
+# Postrotate script:
+# sed -i 's#/api/json/\(ip\|email\|phone\)/[^/]\+/#/api/json/\1/***REDACTED***/#g' /var/log/apache2/access.log
+```
+
+### Alternative: API Gateway Pattern
+
+For maximum security, consider deploying an API gateway/proxy:
+
+```
+[Your App] → [Internal Gateway] → [IPQS API]
+           (header auth)      (path auth)
+```
+
+The gateway:
+- Authenticates your app via headers (Authorization: Bearer token)
+- Proxies requests to IPQS with path-based auth
+- Keeps API keys centralized and out of application logs
+- Enables centralized key rotation
+
+**Example with nginx:**
+
+```nginx
+# Internal API endpoint (your app calls this)
+location /api/ipqs/ {
+    # Require header-based auth from your app
+    if ($http_authorization != "Bearer your-internal-token") {
+        return 403;
+    }
+
+    # Proxy to IPQS with API key in path
+    rewrite ^/api/ipqs/ip/(.+)$ /api/json/ip/$IPQS_API_KEY/$1 break;
+    proxy_pass https://ipqualityscore.com;
+
+    # Don't log this location (contains API key)
+    access_log off;
+}
+```
+
+### API Key Rotation Procedure
+
+**Recommended rotation schedule:** Every 90 days minimum, or immediately if compromise suspected.
+
+**Rotation steps:**
+1. Generate new API key in IPQualityScore dashboard
+2. Update `IPQS_API_KEY` environment variable in your deployment
+3. Deploy updated configuration
+4. Monitor for errors (old key still in use somewhere)
+5. After 24h grace period, revoke old key in IPQS dashboard
+6. Verify all services working with new key
+
+**Automation:** Consider using secret management tools:
+- AWS Secrets Manager (automatic rotation)
+- HashiCorp Vault
+- Azure Key Vault
+- Google Secret Manager
+
+### Compliance Considerations
+
+**OWASP API Security Top 10:** This limitation violates "Broken Authentication" (API keys in URLs)
+**PCI DSS:** May require additional controls if processing payment data
+**GDPR/Privacy:** Ensure logs containing URLs are properly secured
+**SOC 2:** Document this limitation in security policies and compensating controls
+
+### Secret Scanning
+
+**Recommended tools:**
+- GitGuardian: Scans repositories for exposed secrets
+- TruffleHog: Finds secrets in git history
+- git-secrets: Prevents committing secrets
+
+**Pre-commit hook example:**
+
+```bash
+#!/bin/bash
+# .git/hooks/pre-commit
+
+# Check for IPQS API keys in staged files
+if git grep -E 'IPQS_API_KEY\s*=\s*[a-zA-Z0-9]{20,}' $(git diff --cached --name-only); then
+    echo "ERROR: IPQS API key found in staged files!"
+    echo "API keys should only be in .env (which is .gitignored)"
+    exit 1
+fi
 ```
 
 ---
